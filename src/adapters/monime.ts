@@ -1,4 +1,4 @@
-import type { PaymentGateway } from "../gateway.ts";
+import type { PaymentGateway } from "../gateway.js";
 import {
   type ChargeRequest,
   type MobileMoneyProvider,
@@ -9,7 +9,7 @@ import {
   type WebhookEvent,
   type WebhookEventType,
   WebhookVerificationError,
-} from "../types.ts";
+} from "../types.js";
 import {
   computeHmacBase64,
   DEFAULT_MAX_RETRIES,
@@ -21,7 +21,7 @@ import {
   safeCompare,
   validateRequiredConfig,
   verifyTimestamp,
-} from "../utils.ts";
+} from "../utils.js";
 
 const MONIME_API_BASE = "https://api.monime.io/v1";
 const DEFAULT_CUSTOM_WEBHOOK_HEADER = "salone-bazaar-monime-webhook";

@@ -1,5 +1,5 @@
-export { PaymentGateway } from "./gateway.ts";
-export type { MonimeConfig } from "./adapters/monime.ts";
+export { PaymentGateway } from "./gateway.js";
+export type { MonimeConfig } from "./adapters/monime.js";
 export {
   type ChargeRequest,
   type CurrencyCode,
@@ -11,4 +11,4 @@ export {
   type WebhookEvent,
   type WebhookEventType,
   WebhookVerificationError,
-} from "./types.ts";
+} from "./types.js";

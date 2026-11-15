@@ -1,26 +1,29 @@
-import { MonimeAdapter, type MonimeConfig } from "./adapters/monime.ts";
+import { MonimeAdapter, type MonimeConfig } from "./adapters/monime.js";
 import type {
   ChargeRequest,
   PayoutRequest,
   TransactionResult,
   WebhookEvent,
-} from "./types.ts";
+} from "./types.js";
 
-export interface PaymentGateway {
+/**
+ * Provider-agnostic payment gateway contract and static factory constructors.
+ */
+export abstract class PaymentGateway {
   /**
    * Initiates a customer charge (e.g., generates a USSD payment code).
    */
-  charge(request: ChargeRequest): Promise<TransactionResult>;
+  abstract charge(request: ChargeRequest): Promise<TransactionResult>;
 
   /**
    * Initiates a mobile money payout / withdrawal to a vendor or farmer.
    */
-  payout(request: PayoutRequest): Promise<TransactionResult>;
+  abstract payout(request: PayoutRequest): Promise<TransactionResult>;
 
   /**
    * Verifies and fetches the current state of a transaction from the provider.
    */
-  verify(
+  abstract verify(
     transactionId: string,
     type?: "charge" | "payout",
   ): Promise<TransactionResult>;
@@ -30,17 +33,12 @@ export interface PaymentGateway {
    * and parses it into a normalized WebhookEvent.
    * Throws WebhookVerificationError on authentication/signature failure.
    */
-  parseWebhook(req: Request): Promise<WebhookEvent>;
-}
+  abstract parseWebhook(req: Request): Promise<WebhookEvent>;
 
-/**
- * Provider-agnostic factory constructors for {@link PaymentGateway} instances.
- */
-export const PaymentGateway = {
   /**
    * Creates a {@link PaymentGateway} backed by the Monime REST API and webhook verifier.
    */
-  monime(config: MonimeConfig): PaymentGateway {
+  static monime(config: MonimeConfig): PaymentGateway {
     return new MonimeAdapter(config);
-  },
-} as const;
+  }
+}
