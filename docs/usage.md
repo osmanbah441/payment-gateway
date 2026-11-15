@@ -41,9 +41,9 @@ Install `payment-gateway` directly from the private GitHub repository (`osmanbah
 
 ### Supabase Edge Functions Setup
 
-Deno resolves npm-installed GitHub packages cleanly via `"nodeModulesDir": "manual"`:
+Deno resolves npm-installed GitHub packages cleanly via a Deno workspace root (`supabase/functions/deno.json`) with `"nodeModulesDir": "manual"`:
 
-1. **Add `supabase/functions/package.json`**:
+1. **Add `supabase/functions/package.json`** (note: `openai` satisfies the transitive type dependency referenced by `@supabase/functions-js/edge-runtime.d.ts` under manual `node_modules` resolution):
    ```json
    {
      "name": "edge-functions",
@@ -51,6 +51,7 @@ Deno resolves npm-installed GitHub packages cleanly via `"nodeModulesDir": "manu
      "type": "module",
      "dependencies": {
        "@supabase/supabase-js": "^2.0.0",
+       "openai": "^4.52.5",
        "payment-gateway": "git+https://github.com/osmanbah441/payment-gateway.git"
      }
    }
@@ -62,17 +63,27 @@ Deno resolves npm-installed GitHub packages cleanly via `"nodeModulesDir": "manu
    npm install
    ```
 
-3. **Configure each function's `deno.json`** (for example `supabase/functions/payment-handler/deno.json` and `supabase/functions/payment-webhook-ingest/deno.json`):
+3. **Configure the Deno workspace root (`supabase/functions/deno.json`) and function configs**:
+   Set `"nodeModulesDir": "manual"` at the workspace root (`supabase/functions/deno.json`) and list each function directory in `"workspace"`:
    ```json
    {
      "nodeModulesDir": "manual",
+     "workspace": ["./payment-handler", "./payment-webhook-ingest"],
+     "imports": {
+       "@supabase/functions-js": "jsr:@supabase/functions-js@^2"
+     }
+   }
+   ```
+   Each member function's `deno.json` (for example `supabase/functions/payment-handler/deno.json`) only keeps its `"imports"` map (omit `"nodeModulesDir"` from workspace members):
+   ```json
+   {
      "imports": {
        "@supabase/functions-js": "jsr:@supabase/functions-js@^2"
      }
    }
    ```
 
-4. **Type-check Edge Functions**:
+4. **Type-check Edge Functions** (from repo root using `--config`, or directly inside `supabase/functions/`):
    ```bash
    deno check --config supabase/functions/payment-handler/deno.json supabase/functions/payment-handler/index.ts
    deno check --config supabase/functions/payment-webhook-ingest/deno.json supabase/functions/payment-webhook-ingest/index.ts
