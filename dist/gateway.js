@@ -1,4 +1,4 @@
-import { MonimeAdapter } from "./adapters/monime.js";
+import { MonimeAdapter } from "./monime/monime.js";
 /**
  * Provider-agnostic payment gateway contract and static factory constructors.
  */

@@ -1,76 +1,7 @@
-import { PaymentGatewayError, WebhookVerificationError, } from "../types.js";
-import { DEFAULT_MAX_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS, fetchWithRetry, MonetaryConverter, normalizeCurrency, normalizePaymentStatus, validateRequiredKeys, verifyHmacWebhook, } from "../utils.js";
+import { MonetaryConverter, normalizeCurrency, normalizePaymentStatus, validateRequiredKeys, } from "../utils.js";
+import { assertValidResultAmount, monimeClient } from "./client.js";
+import { DEFAULT_CUSTOM_WEBHOOK_HEADER, parseMonimeWebhook, } from "./webhook.js";
 const MONIME_API_BASE = "https://api.monime.io/v1";
-const DEFAULT_CUSTOM_WEBHOOK_HEADER = "salone-bazaar-monime-webhook";
-class MonimeApiError extends PaymentGatewayError {
-    constructor(message, status, body) {
-        super(message, status, body);
-        this.name = "MonimeApiError";
-    }
-}
-var MonimeEventName;
-(function (MonimeEventName) {
-    MonimeEventName["PAYMENT_CODE_COMPLETED"] = "payment_code.completed";
-    MonimeEventName["PAYOUT_COMPLETED"] = "payout.completed";
-    MonimeEventName["CHECKOUT_SESSION_COMPLETED"] = "checkout_session.completed";
-})(MonimeEventName || (MonimeEventName = {}));
-async function monimeClient(config) {
-    const url = `${config.baseUrl}${config.path}`;
-    const method = config.method;
-    let body;
-    if (["POST", "PUT", "PATCH"].includes(method) && config.data) {
-        body = JSON.stringify(config.data);
-    }
-    const headers = {
-        "Authorization": `Bearer ${config.personalAccessToken}`,
-        "Content-Type": "application/json",
-        "Monime-Space-Id": config.spaceId,
-    };
-    if (config.idempotencyKey) {
-        headers["Idempotency-Key"] = config.idempotencyKey;
-    }
-    const response = await fetchWithRetry(url, { method, headers, body }, {
-        maxRetries: DEFAULT_MAX_RETRIES,
-        timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
-        idempotencyKey: config.idempotencyKey,
-        createError: (message, status, errBody) => new MonimeApiError(message, status, errBody),
-    });
-    if (response.status === 204) {
-        return {
-            success: true,
-            messages: ["No Content"],
-            result: {},
-        };
-    }
-    let parsedBody;
-    try {
-        parsedBody = await response.json();
-    }
-    catch {
-        throw new MonimeApiError("Malformed Monime API response body", response.status, null);
-    }
-    if (!response.ok) {
-        throw new MonimeApiError(`Monime API Error [${response.status}]`, response.status, parsedBody);
-    }
-    if (typeof parsedBody !== "object" ||
-        parsedBody === null ||
-        !("result" in parsedBody) ||
-        typeof parsedBody.result !== "object" ||
-        parsedBody.result === null) {
-        throw new MonimeApiError("Unexpected Monime API response structure", response.status, parsedBody);
-    }
-    const typedBody = parsedBody;
-    if (typedBody.success === false) {
-        throw new MonimeApiError(typedBody.messages?.[0] ?? "Monime API request failed", response.status, parsedBody);
-    }
-    return typedBody;
-}
-function assertValidResultAmount(res) {
-    if (typeof res.result.id !== "string" ||
-        typeof res.result.amount?.value !== "number") {
-        throw new MonimeApiError("Monime API result is missing required id or amount", undefined, res);
-    }
-}
 function normalizeProviderId(provider) {
     switch (provider) {
         case "orange_money":
@@ -79,29 +10,6 @@ function normalizeProviderId(provider) {
             return "m18";
         default:
             return provider;
-    }
-}
-function normalizeWebhookEventType(eventName) {
-    switch (eventName) {
-        case MonimeEventName.PAYMENT_CODE_COMPLETED:
-            return "charge.completed";
-        case MonimeEventName.PAYOUT_COMPLETED:
-            return "payout.completed";
-        case MonimeEventName.CHECKOUT_SESSION_COMPLETED:
-            return "checkout.completed";
-        default:
-            return "unknown";
-    }
-}
-function webhookStatusForEvent(type) {
-    switch (type) {
-        case "charge.completed":
-            return "paid";
-        case "payout.completed":
-        case "checkout.completed":
-            return "completed";
-        default:
-            return "unknown";
     }
 }
 export class MonimeAdapter {
@@ -236,50 +144,11 @@ export class MonimeAdapter {
         };
     }
     async parseWebhook(req) {
-        const secrets = validateRequiredKeys({
-            MONIME_PAYMENT_COMPLETED_WEBHOOK: this.config.webhookSecret,
-            SALONE_BAZAAR_PAYMENT_COMPLETED_WEBHOOK: this.config.customWebhookHeaderSecret,
-        }, "Missing required Monime personal access tokens");
-        const { rawBody } = await verifyHmacWebhook(req, {
-            signatureHeaderName: "monime-signature",
-            webhookSecret: secrets.MONIME_PAYMENT_COMPLETED_WEBHOOK,
-            customHeaderName: this.customWebhookHeaderName,
-            customHeaderSecret: secrets.SALONE_BAZAAR_PAYMENT_COMPLETED_WEBHOOK,
-            encoding: "base64",
+        return parseMonimeWebhook(req, {
+            webhookSecret: this.config.webhookSecret,
+            customWebhookHeaderSecret: this.config.customWebhookHeaderSecret,
+            customWebhookHeaderName: this.customWebhookHeaderName,
         });
-        let parsed;
-        try {
-            parsed = JSON.parse(rawBody);
-        }
-        catch {
-            throw new WebhookVerificationError("Invalid webhook JSON payload", 400);
-        }
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-            throw new WebhookVerificationError("Invalid webhook payload structure", 400);
-        }
-        const payload = parsed;
-        const rawEventName = typeof payload.event?.name === "string" ? payload.event.name : "";
-        const type = normalizeWebhookEventType(rawEventName);
-        const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
-            ? payload.data
-            : null;
-        const reference = typeof data?.reference === "string" ? data.reference : undefined;
-        const eventId = typeof payload.event?.id === "string"
-            ? payload.event.id
-            : typeof payload.object?.id === "string"
-                ? payload.object.id
-                : "";
-        const timestamp = typeof payload.event?.timestamp === "string" ? payload.event.timestamp : "";
-        return {
-            id: eventId,
-            type,
-            rawEventName,
-            status: webhookStatusForEvent(type),
-            reference,
-            timestamp,
-            data,
-            raw: payload,
-        };
     }
 }
 //# sourceMappingURL=monime.js.map

@@ -1,4 +1,5 @@
-import { MonimeAdapter, type MonimeConfig } from "./adapters/monime.js";
+import { MonimeAdapter } from "./monime/monime.js";
+import type { MonimeConfig } from "./monime/types.js";
 import type {
   ChargeRequest,
   PayoutRequest,

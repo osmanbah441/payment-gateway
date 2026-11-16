@@ -1,4 +1,4 @@
-import { type MonimeConfig } from "./adapters/monime.js";
+import type { MonimeConfig } from "./monime/types.js";
 import type { ChargeRequest, PayoutRequest, TransactionResult, WebhookEvent } from "./types.js";
 /**
  * Provider-agnostic payment gateway contract and static factory constructors.

@@ -1,5 +1,5 @@
 export { PaymentGateway } from "./gateway.js";
-export type { MonimeConfig } from "./adapters/monime.js";
+export type { MonimeConfig } from "./monime/types.js";
 export {
   type ChargeRequest,
   type CurrencyCode,

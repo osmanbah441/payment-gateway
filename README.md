@@ -1,6 +1,7 @@
 # payment-gateway
 
-Simple, provider-agnostic TypeScript payment gateway for mobile money charges, payouts, transaction checks, and webhooks.
+Simple, provider-agnostic TypeScript payment gateway for mobile money charges,
+payouts, transaction checks, and webhooks.
 
 ## Install
 
@@ -58,6 +59,7 @@ const event = await paymentGateway.parseWebhook(req);
 
 ## Docs
 
-- [Usage Guide](./docs/usage.md) — Setup for Node & Supabase Edge Functions, examples, and updating.
-- [Monime Guide](./docs/monime.md) — Monime config, currency/provider mapping, and webhooks.
-- [Contributing](./docs/contributing.md) — Adding a new provider adapter and releasing updates.
+- [Monime Guide](./docs/monime.md) — Monime config, currency/provider mapping,
+  and webhooks.
+- [Contributing](./docs/contributing.md) — Adding a new provider adapter and
+  releasing updates.
