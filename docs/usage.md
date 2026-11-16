@@ -129,7 +129,28 @@ Deno.serve(async (req) => {
 
 ---
 
-## 5. Update the Package
+## 5. Local Testing Simulator
+
+`payment-gateway` includes a local Monime mock server (`payment-gateway-mock`) so you can test order creation and signed webhook updates without hitting live Monime servers.
+
+1. Pass `baseUrl: Deno.env.get("MONIME_BASE_URL")` in `PaymentGateway.monime({ ... })`.
+2. In your local `.env`, set:
+   ```env
+   MONIME_BASE_URL=http://host.docker.internal:54999/v1
+   ```
+3. Start the local simulator from `supabase/functions/`:
+   ```bash
+   npx payment-gateway-mock
+   ```
+   - Calling `charge()` creates a mock payment code and automatically sends a signed `payment_code.completed` webhook to `http://127.0.0.1:54321/functions/v1/payment-webhook-ingest` after `2000ms` (`AUTO_WEBHOOK_DELAY_MS`).
+   - To trigger a webhook manually anytime:
+     ```bash
+     curl -X POST http://127.0.0.1:54999/_simulate/webhook -H "Content-Type: application/json" -d '{"reference":"<order-id>"}'
+     ```
+
+---
+
+## 6. Update the Package
 
 In the folder with your `package.json` (e.g., `supabase/functions/`):
 
