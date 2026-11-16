@@ -58,7 +58,7 @@ export interface PayoutRequest {
   metadata?: Record<string, unknown>;
 }
 
-export interface TransactionResult<TRaw = unknown> {
+export interface TransactionResult {
   /** Provider transaction or payment code ID */
   id: string;
   /** Normalized payment status */
@@ -74,7 +74,7 @@ export interface TransactionResult<TRaw = unknown> {
   /** ISO-8601 expiration timestamp for payment codes (when applicable) */
   expireTime?: string;
   /** Raw provider response payload */
-  raw: TRaw;
+  raw: Record<string, unknown>;
 }
 
 export type WebhookEventType =
@@ -83,7 +83,7 @@ export type WebhookEventType =
   | "checkout.completed"
   | "unknown";
 
-export interface WebhookEvent<TData = Record<string, unknown>> {
+export interface WebhookEvent {
   /** Unique webhook event ID */
   id: string;
   /** Normalized provider-agnostic webhook event type */
@@ -97,9 +97,9 @@ export interface WebhookEvent<TData = Record<string, unknown>> {
   /** ISO-8601 event timestamp */
   timestamp: string;
   /** Parsed event data object */
-  data: TData | null;
+  data: Record<string, unknown> | null;
   /** Full raw webhook payload */
-  raw: unknown;
+  raw: Record<string, unknown>;
 }
 
 export class PaymentGatewayError extends Error {

@@ -8,6 +8,7 @@ import {
   type TransactionResult,
   type WebhookEvent,
   type WebhookEventType,
+  WebhookVerificationError,
 } from "../types.js";
 import {
   DEFAULT_MAX_RETRIES,
@@ -23,11 +24,11 @@ import {
 const MONIME_API_BASE = "https://api.monime.io/v1";
 const DEFAULT_CUSTOM_WEBHOOK_HEADER = "salone-bazaar-monime-webhook";
 
-interface MonimeApiResponse<T> {
+type MonimeApiResponse<T> = {
   success: boolean;
   messages: string[];
   result: T;
-}
+};
 
 class MonimeApiError extends PaymentGatewayError {
   constructor(
@@ -180,11 +181,11 @@ async function monimeClient<T>(
   try {
     parsedBody = await response.json();
   } catch {
-    parsedBody = {
-      success: false,
-      messages: ["Malformed response body"],
-      result: null,
-    };
+    throw new MonimeApiError(
+      "Malformed Monime API response body",
+      response.status,
+      null,
+    );
   }
 
   if (!response.ok) {
@@ -195,7 +196,45 @@ async function monimeClient<T>(
     );
   }
 
-  return parsedBody as MonimeApiResponse<T>;
+  if (
+    typeof parsedBody !== "object" ||
+    parsedBody === null ||
+    !("result" in parsedBody) ||
+    typeof (parsedBody as { result?: unknown }).result !== "object" ||
+    (parsedBody as { result?: unknown }).result === null
+  ) {
+    throw new MonimeApiError(
+      "Unexpected Monime API response structure",
+      response.status,
+      parsedBody,
+    );
+  }
+
+  const typedBody = parsedBody as MonimeApiResponse<T>;
+  if (typedBody.success === false) {
+    throw new MonimeApiError(
+      typedBody.messages?.[0] ?? "Monime API request failed",
+      response.status,
+      parsedBody,
+    );
+  }
+
+  return typedBody;
+}
+
+function assertValidResultAmount(
+  res: MonimeApiResponse<{ id?: unknown; amount?: { value?: unknown; currency?: unknown } }>,
+): void {
+  if (
+    typeof res.result.id !== "string" ||
+    typeof res.result.amount?.value !== "number"
+  ) {
+    throw new MonimeApiError(
+      "Monime API result is missing required id or amount",
+      undefined,
+      res,
+    );
+  }
 }
 
 function normalizeProviderId(provider: MobileMoneyProvider): string {
@@ -246,7 +285,7 @@ export class MonimeAdapter implements PaymentGateway {
 
   public async charge(
     request: ChargeRequest,
-  ): Promise<TransactionResult<MonimeApiResponse<UssdPaymentCodeResponse>>> {
+  ): Promise<TransactionResult> {
     const tokens = validateRequiredKeys(
       {
         PAYMENT_API_KEY: this.config.apiKey,
@@ -277,6 +316,7 @@ export class MonimeAdapter implements PaymentGateway {
       method: "POST",
       data: payload,
     });
+    assertValidResultAmount(res);
 
     return {
       id: res.result.id,
@@ -292,7 +332,7 @@ export class MonimeAdapter implements PaymentGateway {
 
   public async payout(
     request: PayoutRequest,
-  ): Promise<TransactionResult<MonimeApiResponse<MonimePayoutResult>>> {
+  ): Promise<TransactionResult> {
     const tokens = validateRequiredKeys(
       {
         PAYMENT_API_KEY: this.config.apiKey,
@@ -325,6 +365,7 @@ export class MonimeAdapter implements PaymentGateway {
         },
       },
     });
+    assertValidResultAmount(res);
 
     return {
       id: res.result.id,
@@ -358,6 +399,7 @@ export class MonimeAdapter implements PaymentGateway {
         spaceId: tokens.MONIME_SPACE_ID,
         method: "GET",
       });
+      assertValidResultAmount(res);
 
       return {
         id: res.result.id,
@@ -376,6 +418,7 @@ export class MonimeAdapter implements PaymentGateway {
       spaceId: tokens.MONIME_SPACE_ID,
       method: "GET",
     });
+    assertValidResultAmount(res);
 
     return {
       id: res.result.id,
@@ -407,23 +450,44 @@ export class MonimeAdapter implements PaymentGateway {
       encoding: "base64",
     });
 
-    const payload = JSON.parse(rawBody) as MonimeWebhookPayload;
-    const rawEventName = payload?.event?.name ?? "";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch {
+      throw new WebhookVerificationError("Invalid webhook JSON payload", 400);
+    }
+
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new WebhookVerificationError("Invalid webhook payload structure", 400);
+    }
+
+    const payload = parsed as Partial<MonimeWebhookPayload> &
+      Record<string, unknown>;
+    const rawEventName =
+      typeof payload.event?.name === "string" ? payload.event.name : "";
     const type = normalizeWebhookEventType(rawEventName);
     const data =
-      payload?.data && typeof payload.data === "object"
+      payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
         ? (payload.data as Record<string, unknown>)
         : null;
     const reference =
       typeof data?.reference === "string" ? data.reference : undefined;
+    const eventId =
+      typeof payload.event?.id === "string"
+        ? payload.event.id
+        : typeof payload.object?.id === "string"
+          ? payload.object.id
+          : "";
+    const timestamp =
+      typeof payload.event?.timestamp === "string" ? payload.event.timestamp : "";
 
     return {
-      id: payload?.event?.id ?? payload?.object?.id ?? "",
+      id: eventId,
       type,
       rawEventName,
       status: webhookStatusForEvent(type),
       reference,
-      timestamp: payload?.event?.timestamp ?? "",
+      timestamp,
       data,
       raw: payload,
     };

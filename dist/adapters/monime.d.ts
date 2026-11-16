@@ -1,47 +1,5 @@
 import type { PaymentGateway } from "../gateway.js";
 import { type ChargeRequest, type PayoutRequest, type TransactionResult, type WebhookEvent } from "../types.js";
-interface MonimeApiResponse<T> {
-    success: boolean;
-    messages: string[];
-    result: T;
-}
-interface MonetaryAmount {
-    currency: string;
-    value: number;
-}
-interface UssdPaymentCodeResponse {
-    id: string;
-    status: string;
-    name: string;
-    amount: MonetaryAmount;
-    expireTime: string;
-    ussdCode: string;
-    customer?: {
-        name?: string;
-    };
-    reference?: string;
-}
-interface MonimePayoutResult {
-    id: string;
-    status?: string;
-    amount: MonetaryAmount;
-    source: {
-        financialAccountId: string;
-        transactionReference?: string;
-    };
-    destination: {
-        type: string;
-        providerId: string;
-        accountNumber?: string;
-        phoneNumber?: string;
-        transactionReference?: string;
-    };
-    fees?: Array<{
-        code: string;
-        amount: MonetaryAmount;
-    }>;
-    reference?: string;
-}
 /**
  * Configuration options for creating a Monime-backed {@link PaymentGateway}.
  *
@@ -72,10 +30,9 @@ export declare class MonimeAdapter implements PaymentGateway {
     private readonly baseUrl;
     private readonly customWebhookHeaderName;
     constructor(config: MonimeConfig);
-    charge(request: ChargeRequest): Promise<TransactionResult<MonimeApiResponse<UssdPaymentCodeResponse>>>;
-    payout(request: PayoutRequest): Promise<TransactionResult<MonimeApiResponse<MonimePayoutResult>>>;
+    charge(request: ChargeRequest): Promise<TransactionResult>;
+    payout(request: PayoutRequest): Promise<TransactionResult>;
     verify(transactionId: string, type?: "charge" | "payout"): Promise<TransactionResult>;
     parseWebhook(req: Request): Promise<WebhookEvent>;
 }
-export {};
 //# sourceMappingURL=monime.d.ts.map

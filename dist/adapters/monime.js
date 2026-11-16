@@ -1,4 +1,4 @@
-import { PaymentGatewayError, } from "../types.js";
+import { PaymentGatewayError, WebhookVerificationError, } from "../types.js";
 import { DEFAULT_MAX_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS, fetchWithRetry, MonetaryConverter, normalizeCurrency, normalizePaymentStatus, validateRequiredKeys, verifyHmacWebhook, } from "../utils.js";
 const MONIME_API_BASE = "https://api.monime.io/v1";
 const DEFAULT_CUSTOM_WEBHOOK_HEADER = "salone-bazaar-monime-webhook";
@@ -47,16 +47,29 @@ async function monimeClient(config) {
         parsedBody = await response.json();
     }
     catch {
-        parsedBody = {
-            success: false,
-            messages: ["Malformed response body"],
-            result: null,
-        };
+        throw new MonimeApiError("Malformed Monime API response body", response.status, null);
     }
     if (!response.ok) {
         throw new MonimeApiError(`Monime API Error [${response.status}]`, response.status, parsedBody);
     }
-    return parsedBody;
+    if (typeof parsedBody !== "object" ||
+        parsedBody === null ||
+        !("result" in parsedBody) ||
+        typeof parsedBody.result !== "object" ||
+        parsedBody.result === null) {
+        throw new MonimeApiError("Unexpected Monime API response structure", response.status, parsedBody);
+    }
+    const typedBody = parsedBody;
+    if (typedBody.success === false) {
+        throw new MonimeApiError(typedBody.messages?.[0] ?? "Monime API request failed", response.status, parsedBody);
+    }
+    return typedBody;
+}
+function assertValidResultAmount(res) {
+    if (typeof res.result.id !== "string" ||
+        typeof res.result.amount?.value !== "number") {
+        throw new MonimeApiError("Monime API result is missing required id or amount", undefined, res);
+    }
 }
 function normalizeProviderId(provider) {
     switch (provider) {
@@ -127,6 +140,7 @@ export class MonimeAdapter {
             method: "POST",
             data: payload,
         });
+        assertValidResultAmount(res);
         return {
             id: res.result.id,
             status: normalizePaymentStatus(res.result.status),
@@ -167,6 +181,7 @@ export class MonimeAdapter {
                 },
             },
         });
+        assertValidResultAmount(res);
         return {
             id: res.result.id,
             status: res.result.status
@@ -191,6 +206,7 @@ export class MonimeAdapter {
                 spaceId: tokens.MONIME_SPACE_ID,
                 method: "GET",
             });
+            assertValidResultAmount(res);
             return {
                 id: res.result.id,
                 status: normalizePaymentStatus(res.result.status),
@@ -207,6 +223,7 @@ export class MonimeAdapter {
             spaceId: tokens.MONIME_SPACE_ID,
             method: "GET",
         });
+        assertValidResultAmount(res);
         return {
             id: res.result.id,
             status: normalizePaymentStatus(res.result.status),
@@ -230,20 +247,36 @@ export class MonimeAdapter {
             customHeaderSecret: secrets.SALONE_BAZAAR_PAYMENT_COMPLETED_WEBHOOK,
             encoding: "base64",
         });
-        const payload = JSON.parse(rawBody);
-        const rawEventName = payload?.event?.name ?? "";
+        let parsed;
+        try {
+            parsed = JSON.parse(rawBody);
+        }
+        catch {
+            throw new WebhookVerificationError("Invalid webhook JSON payload", 400);
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            throw new WebhookVerificationError("Invalid webhook payload structure", 400);
+        }
+        const payload = parsed;
+        const rawEventName = typeof payload.event?.name === "string" ? payload.event.name : "";
         const type = normalizeWebhookEventType(rawEventName);
-        const data = payload?.data && typeof payload.data === "object"
+        const data = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
             ? payload.data
             : null;
         const reference = typeof data?.reference === "string" ? data.reference : undefined;
+        const eventId = typeof payload.event?.id === "string"
+            ? payload.event.id
+            : typeof payload.object?.id === "string"
+                ? payload.object.id
+                : "";
+        const timestamp = typeof payload.event?.timestamp === "string" ? payload.event.timestamp : "";
         return {
-            id: payload?.event?.id ?? payload?.object?.id ?? "",
+            id: eventId,
             type,
             rawEventName,
             status: webhookStatusForEvent(type),
             reference,
-            timestamp: payload?.event?.timestamp ?? "",
+            timestamp,
             data,
             raw: payload,
         };
