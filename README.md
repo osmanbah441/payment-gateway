@@ -5,20 +5,33 @@ payouts, transaction checks, and webhooks.
 
 ## Install
 
-1. Create `.npmrc` in your project or Edge Function folder (e.g., `supabase/functions/payment-gateway/.npmrc`):
+### 1. Create a GitHub PAT (classic)
+
+GitHub Packages (`npm.pkg.github.com`) requires a **classic** Personal Access Token (fine-grained PATs are not supported for npm):
+
+1. Open GitHub **Settings -> Developer settings -> Personal access tokens -> Tokens (classic)**.
+2. Click **Generate new token -> Generate new token (classic)**.
+3. Give it a name (e.g., `supabase-edge-functions`) and select:
+   - `read:packages` (required to download `@osmanbah441/payment-gateway`)
+   - `repo` (required because this repository is private)
+4. Click **Generate token** and copy the `ghp_...` value.
+
+### 2. Configure `.npmrc` & `.gitignore`
+
+Create `.npmrc` in your project or Edge Function folder (e.g., `supabase/functions/payment-gateway/.npmrc`):
 
 ```ini
 @osmanbah441:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=YOUR_GITHUB_PAT
 ```
 
-2. Add `.npmrc` to `.gitignore` so your GitHub token (`read:packages`) is never committed:
+Add `.npmrc` to `.gitignore` so your token is never committed:
 
 ```gitignore
 .npmrc
 ```
 
-3. Install via npm or map in Supabase `deno.json`:
+### 3. Install or Map in `deno.json`
 
 ```bash
 npm install @osmanbah441/payment-gateway
