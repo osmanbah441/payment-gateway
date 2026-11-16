@@ -5,20 +5,31 @@ payouts, transaction checks, and webhooks.
 
 ## Install
 
-```bash
-npm install git+https://github.com/osmanbah441/payment-gateway.git
+Configure `.npmrc` for GitHub Packages:
+
+```ini
+@osmanbah441:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
 ```
 
-Or pin a tag:
+Then install via npm or map in Supabase `deno.json`:
 
 ```bash
-npm install git+https://github.com/osmanbah441/payment-gateway.git#v0.1.0
+npm install @osmanbah441/payment-gateway
+```
+
+```json
+{
+  "imports": {
+    "payment-gateway": "npm:@osmanbah441/payment-gateway@^0.1.0"
+  }
+}
 ```
 
 ## Update
 
 ```bash
-npm update payment-gateway
+npm update @osmanbah441/payment-gateway
 ```
 
 ## Quick Start
