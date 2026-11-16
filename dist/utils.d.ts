@@ -1,3 +1,4 @@
+import { type PaymentStatus } from "./types.js";
 export declare const DEFAULT_MAX_RETRIES = 3;
 export declare const DEFAULT_INITIAL_DELAY_MS = 500;
 export declare const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
@@ -15,60 +16,59 @@ export interface FetchRetryOptions {
     /** Custom error factory for non-retryable or exhausted failures */
     createError?: (message: string, status?: number, body?: unknown) => Error;
 }
-export interface RequiredConfigVar {
-    key: string;
-    value: string | undefined;
+export interface VerifyHmacWebhookOptions {
+    /** Header containing the signature (e.g., "monime-signature") */
+    signatureHeaderName: string;
+    /** Secret used to compute the HMAC-SHA256 signature */
+    webhookSecret: string;
+    /** Optional shared secret header name to validate before signature checks */
+    customHeaderName?: string;
+    /** Expected shared secret value for `customHeaderName` */
+    customHeaderSecret?: string;
+    /** Signature digest encoding (defaults to "base64") */
+    encoding?: "base64" | "hex";
+    /** Builds the signed message from timestamp and raw body (defaults to `${timestamp}_${rawBody}`) */
+    buildSignedPayload?: (timestamp: string, rawBody: string) => string;
+    /** Maximum allowed webhook age in seconds (defaults to 300) */
+    maxAgeSeconds?: number;
+    /** Maximum allowed future clock skew in seconds (defaults to 60) */
+    maxFutureSeconds?: number;
 }
-export interface ValidateConfigOptions {
-    /** Message prefix before the comma-separated missing keys */
-    prefix?: string;
-    /** Custom error factory when keys are missing */
-    createError?: (message: string) => Error;
-}
-/**
- * Resolves after the specified duration in milliseconds.
- */
-export declare function sleep(ms: number): Promise<void>;
-/**
- * Computes exponential backoff delay for a 1-based attempt number.
- */
-export declare function calculateBackoffDelay(attempt: number, initialDelayMs?: number): number;
-/**
- * Safely parses a Response body as JSON, falling back to plain text or null.
- */
-export declare function parseResponseBody(response: Response): Promise<unknown>;
 /**
  * Executes fetch with per-attempt timeout, exponential backoff retries on 5xx and
  * network/timeout errors, and idempotency key suffixed (`-r<attempt>`) after 5xx responses.
  */
 export declare function fetchWithRetry(url: string, options?: RequestInit, retryOptions?: FetchRetryOptions): Promise<Response>;
 /**
- * Ensures all required configuration values are present, throwing a descriptive error if any are missing.
+ * Validates that every key in `keys` has a non-empty string value, returning the
+ * narrowed record or throwing a `PaymentGatewayError` listing all missing keys.
  */
-export declare function validateRequiredConfig(requiredVars: RequiredConfigVar[], options?: ValidateConfigOptions): void;
+export declare function validateRequiredKeys<T extends Record<string, string | undefined>>(keys: T, prefix?: string): {
+    [K in keyof T]: string;
+};
 /**
- * Computes a Base64-encoded HMAC-SHA256 digest using Web Crypto.
+ * Normalizes Sierra Leone currency codes between outbound ISO format (`"SLE"`)
+ * and inbound display format (`"NLe"`).
  */
-export declare function computeHmacBase64(secret: string, payload: string): Promise<string>;
+export declare function normalizeCurrency(currency?: string, format?: "iso" | "display"): string;
 /**
- * Computes a lowercase hex-encoded HMAC-SHA256 digest using Web Crypto.
+ * Maps provider-specific transaction status strings into normalized `PaymentStatus` values.
  */
-export declare function computeHmacHex(secret: string, payload: string): Promise<string>;
+export declare function normalizePaymentStatus(status?: string): PaymentStatus;
 /**
  * Timing-safe string comparison (normalizing optional trailing Base64 `=` padding).
  */
 export declare function safeCompare(a: string, b: string): boolean;
 /**
- * Verifies a Unix timestamp (seconds) falls within replay tolerance bounds.
+ * Verifies an incoming HMAC-SHA256 signed webhook request (optional shared header check,
+ * `t=<unix>,v1=<sig>` header parsing, replay window check, and constant-time HMAC comparison).
+ * Returns the raw request body and parsed timestamp/signature, or throws `WebhookVerificationError`.
  */
-export declare function verifyTimestamp(timestamp: string | number, maxAgeSeconds?: number, maxFutureSeconds?: number): boolean;
-/**
- * Parses a `t=<timestamp>,v1=<signature>` webhook signature header.
- */
-export declare function parseSignatureHeader(header: string): {
+export declare function verifyHmacWebhook(req: Request, options: VerifyHmacWebhookOptions): Promise<{
+    rawBody: string;
     timestamp: string;
     signature: string;
-};
+}>;
 export declare class MonetaryConverter {
     /**
      * Converts a decimal value in the major unit (e.g., 8.55) to an integer in the minor unit (e.g., 855).

@@ -1,4 +1,8 @@
-import { PaymentGatewayError } from "./types.js";
+import {
+  PaymentGatewayError,
+  type PaymentStatus,
+  WebhookVerificationError,
+} from "./types.js";
 
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_INITIAL_DELAY_MS = 500;
@@ -19,50 +23,23 @@ export interface FetchRetryOptions {
   createError?: (message: string, status?: number, body?: unknown) => Error;
 }
 
-export interface RequiredConfigVar {
-  key: string;
-  value: string | undefined;
-}
-
-export interface ValidateConfigOptions {
-  /** Message prefix before the comma-separated missing keys */
-  prefix?: string;
-  /** Custom error factory when keys are missing */
-  createError?: (message: string) => Error;
-}
-
-/**
- * Resolves after the specified duration in milliseconds.
- */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Computes exponential backoff delay for a 1-based attempt number.
- */
-export function calculateBackoffDelay(
-  attempt: number,
-  initialDelayMs: number = DEFAULT_INITIAL_DELAY_MS,
-): number {
-  return Math.pow(2, attempt - 1) * initialDelayMs;
-}
-
-/**
- * Safely parses a Response body as JSON, falling back to plain text or null.
- */
-export async function parseResponseBody(response: Response): Promise<unknown> {
-  try {
-    const rawText = await response.text();
-    if (!rawText) return null;
-    try {
-      return JSON.parse(rawText);
-    } catch {
-      return rawText;
-    }
-  } catch {
-    return null;
-  }
+export interface VerifyHmacWebhookOptions {
+  /** Header containing the signature (e.g., "monime-signature") */
+  signatureHeaderName: string;
+  /** Secret used to compute the HMAC-SHA256 signature */
+  webhookSecret: string;
+  /** Optional shared secret header name to validate before signature checks */
+  customHeaderName?: string;
+  /** Expected shared secret value for `customHeaderName` */
+  customHeaderSecret?: string;
+  /** Signature digest encoding (defaults to "base64") */
+  encoding?: "base64" | "hex";
+  /** Builds the signed message from timestamp and raw body (defaults to `${timestamp}_${rawBody}`) */
+  buildSignedPayload?: (timestamp: string, rawBody: string) => string;
+  /** Maximum allowed webhook age in seconds (defaults to 300) */
+  maxAgeSeconds?: number;
+  /** Maximum allowed future clock skew in seconds (defaults to 60) */
+  maxFutureSeconds?: number;
 }
 
 /**
@@ -111,7 +88,20 @@ export async function fetchWithRetry(
 
       if (response.ok) return response;
 
-      const parsedBody = await parseResponseBody(response);
+      let parsedBody: unknown = null;
+      try {
+        const rawText = await response.text();
+        if (rawText) {
+          try {
+            parsedBody = JSON.parse(rawText);
+          } catch {
+            parsedBody = rawText;
+          }
+        }
+      } catch {
+        parsedBody = null;
+      }
+
       if (response.status >= 500) {
         had5xxResponse = true;
         lastRetryableStatus = response.status;
@@ -136,8 +126,8 @@ export async function fetchWithRetry(
     }
 
     if (attempt < maxRetries) {
-      const delay = calculateBackoffDelay(attempt, initialDelayMs);
-      await sleep(delay);
+      const delay = Math.pow(2, attempt - 1) * initialDelayMs;
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 
@@ -161,77 +151,74 @@ export async function fetchWithRetry(
 }
 
 /**
- * Ensures all required configuration values are present, throwing a descriptive error if any are missing.
+ * Validates that every key in `keys` has a non-empty string value, returning the
+ * narrowed record or throwing a `PaymentGatewayError` listing all missing keys.
  */
-export function validateRequiredConfig(
-  requiredVars: RequiredConfigVar[],
-  options: ValidateConfigOptions = {},
-): void {
+export function validateRequiredKeys<
+  T extends Record<string, string | undefined>,
+>(
+  keys: T,
+  prefix = "Missing required configuration keys",
+): { [K in keyof T]: string } {
   const missingKeys: string[] = [];
 
-  for (const { key, value } of requiredVars) {
+  for (const [key, value] of Object.entries(keys)) {
     if (!value) {
       missingKeys.push(key);
     }
   }
 
   if (missingKeys.length > 0) {
-    const prefix = options.prefix ?? "Missing required configuration keys";
-    const message = `${prefix}: ${missingKeys.join(", ")}`;
-    const createError =
-      options.createError ?? ((msg: string) => new PaymentGatewayError(msg));
-    throw createError(message);
+    throw new PaymentGatewayError(`${prefix}: ${missingKeys.join(", ")}`);
   }
-}
 
-async function computeHmacBytes(
-  secret: string,
-  payload: string,
-): Promise<Uint8Array> {
-  const encoder = new TextEncoder();
-  const keyBytes = encoder.encode(secret);
-  const messageBytes = encoder.encode(payload);
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyBytes,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-
-  const signatureBuffer = await crypto.subtle.sign("HMAC", key, messageBytes);
-  return new Uint8Array(signatureBuffer);
+  return keys as { [K in keyof T]: string };
 }
 
 /**
- * Computes a Base64-encoded HMAC-SHA256 digest using Web Crypto.
+ * Normalizes Sierra Leone currency codes between outbound ISO format (`"SLE"`)
+ * and inbound display format (`"NLe"`).
  */
-export async function computeHmacBase64(
-  secret: string,
-  payload: string,
-): Promise<string> {
-  const hashArray = await computeHmacBytes(secret, payload);
-  let binary = "";
-  for (let i = 0; i < hashArray.byteLength; i++) {
-    binary += String.fromCharCode(hashArray[i]);
+export function normalizeCurrency(
+  currency?: string,
+  format: "iso" | "display" = "display",
+): string {
+  if (format === "iso") {
+    if (!currency || currency === "NLe" || currency === "NLE") {
+      return "SLE";
+    }
+    return currency;
   }
-  return btoa(binary);
+
+  if (!currency || currency === "SLE") {
+    return "NLe";
+  }
+  return currency;
 }
 
 /**
- * Computes a lowercase hex-encoded HMAC-SHA256 digest using Web Crypto.
+ * Maps provider-specific transaction status strings into normalized `PaymentStatus` values.
  */
-export async function computeHmacHex(
-  secret: string,
-  payload: string,
-): Promise<string> {
-  const hashArray = await computeHmacBytes(secret, payload);
-  let hex = "";
-  for (let i = 0; i < hashArray.byteLength; i++) {
-    hex += hashArray[i].toString(16).padStart(2, "0");
+export function normalizePaymentStatus(status?: string): PaymentStatus {
+  switch (status?.toLowerCase()) {
+    case "pending":
+    case "processing":
+      return "pending";
+    case "completed":
+    case "succeeded":
+      return "completed";
+    case "paid":
+      return "paid";
+    case "failed":
+      return "failed";
+    case "cancelled":
+    case "canceled":
+      return "cancelled";
+    case "expired":
+      return "expired";
+    default:
+      return "unknown";
   }
-  return hex;
 }
 
 /**
@@ -251,49 +238,82 @@ export function safeCompare(a: string, b: string): boolean {
 }
 
 /**
- * Verifies a Unix timestamp (seconds) falls within replay tolerance bounds.
+ * Verifies an incoming HMAC-SHA256 signed webhook request (optional shared header check,
+ * `t=<unix>,v1=<sig>` header parsing, replay window check, and constant-time HMAC comparison).
+ * Returns the raw request body and parsed timestamp/signature, or throws `WebhookVerificationError`.
  */
-export function verifyTimestamp(
-  timestamp: string | number,
-  maxAgeSeconds = 300,
-  maxFutureSeconds = 60,
-): boolean {
-  const ts =
-    typeof timestamp === "number" ? timestamp : parseInt(timestamp, 10);
-  if (isNaN(ts)) return false;
-
-  const now = Math.floor(Date.now() / 1000);
-  if (now - ts > maxAgeSeconds || ts - now > maxFutureSeconds) {
-    console.error(
-      `❌ Timestamp out of tolerance: now=${now}, t=${ts}, diff=${ts - now}`,
-    );
-    return false;
+export async function verifyHmacWebhook(
+  req: Request,
+  options: VerifyHmacWebhookOptions,
+): Promise<{ rawBody: string; timestamp: string; signature: string }> {
+  if (options.customHeaderName && options.customHeaderSecret) {
+    const headerSecret = req.headers.get(options.customHeaderName);
+    if (!headerSecret || !safeCompare(headerSecret, options.customHeaderSecret)) {
+      throw new WebhookVerificationError("Unauthorized header", 401);
+    }
   }
-  return true;
-}
 
-/**
- * Parses a `t=<timestamp>,v1=<signature>` webhook signature header.
- */
-export function parseSignatureHeader(header: string): {
-  timestamp: string;
-  signature: string;
-} {
+  const signatureHeader = req.headers.get(options.signatureHeaderName);
+  if (!signatureHeader) {
+    throw new WebhookVerificationError("Missing signature header", 401);
+  }
+
   const parts = Object.fromEntries(
-    header.split(",").map((part) => {
+    signatureHeader.split(",").map((part) => {
       const [k, v] = part.split("=", 2);
       return [k?.trim() ?? "", v?.trim() ?? ""];
     }),
   );
 
-  if (!parts.t || !parts.v1) {
-    throw new Error("Invalid signature format");
+  const timestamp = parts.t;
+  const signature = parts.v1;
+  if (!timestamp || !signature) {
+    throw new WebhookVerificationError("Invalid signature format", 401);
   }
 
-  return {
-    timestamp: parts.t,
-    signature: parts.v1,
-  };
+  const ts = parseInt(timestamp, 10);
+  const now = Math.floor(Date.now() / 1000);
+  const maxAge = options.maxAgeSeconds ?? 300;
+  const maxFuture = options.maxFutureSeconds ?? 60;
+  if (isNaN(ts) || now - ts > maxAge || ts - now > maxFuture) {
+    throw new WebhookVerificationError("Timestamp out of tolerance", 401);
+  }
+
+  const rawBody = await req.text();
+  const signedPayload = options.buildSignedPayload
+    ? options.buildSignedPayload(timestamp, rawBody)
+    : `${timestamp}_${rawBody}`;
+
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(options.webhookSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const hashArray = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, encoder.encode(signedPayload)),
+  );
+
+  let expectedSignature = "";
+  if (options.encoding === "hex") {
+    for (let i = 0; i < hashArray.byteLength; i++) {
+      expectedSignature += hashArray[i].toString(16).padStart(2, "0");
+    }
+  } else {
+    let binary = "";
+    for (let i = 0; i < hashArray.byteLength; i++) {
+      binary += String.fromCharCode(hashArray[i]);
+    }
+    expectedSignature = btoa(binary);
+  }
+
+  if (!safeCompare(signature, expectedSignature)) {
+    throw new WebhookVerificationError("Invalid signature", 401);
+  }
+
+  return { rawBody, timestamp, signature };
 }
 
 export class MonetaryConverter {

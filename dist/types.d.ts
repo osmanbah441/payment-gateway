@@ -1,5 +1,5 @@
 export type PaymentStatus = "pending" | "completed" | "paid" | "failed" | "cancelled" | "expired" | "unknown";
-export type MobileMoneyProvider = "orange_money" | "afrimoney" | "m17" | "m18" | (string & {});
+export type MobileMoneyProvider = "orange_money" | "afrimoney" | (string & {});
 export type CurrencyCode = "SLE" | "NLE" | "NLe" | (string & {});
 export interface ChargeRequest {
     /** Amount in major currency units (e.g., NLe / SLE) */

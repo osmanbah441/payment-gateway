@@ -1,38 +1,7 @@
-import { PaymentGatewayError } from "./types.js";
+import { PaymentGatewayError, WebhookVerificationError, } from "./types.js";
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_INITIAL_DELAY_MS = 500;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
-/**
- * Resolves after the specified duration in milliseconds.
- */
-export function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-/**
- * Computes exponential backoff delay for a 1-based attempt number.
- */
-export function calculateBackoffDelay(attempt, initialDelayMs = DEFAULT_INITIAL_DELAY_MS) {
-    return Math.pow(2, attempt - 1) * initialDelayMs;
-}
-/**
- * Safely parses a Response body as JSON, falling back to plain text or null.
- */
-export async function parseResponseBody(response) {
-    try {
-        const rawText = await response.text();
-        if (!rawText)
-            return null;
-        try {
-            return JSON.parse(rawText);
-        }
-        catch {
-            return rawText;
-        }
-    }
-    catch {
-        return null;
-    }
-}
 /**
  * Executes fetch with per-attempt timeout, exponential backoff retries on 5xx and
  * network/timeout errors, and idempotency key suffixed (`-r<attempt>`) after 5xx responses.
@@ -65,7 +34,21 @@ export async function fetchWithRetry(url, options = {}, retryOptions = {}) {
             });
             if (response.ok)
                 return response;
-            const parsedBody = await parseResponseBody(response);
+            let parsedBody = null;
+            try {
+                const rawText = await response.text();
+                if (rawText) {
+                    try {
+                        parsedBody = JSON.parse(rawText);
+                    }
+                    catch {
+                        parsedBody = rawText;
+                    }
+                }
+            }
+            catch {
+                parsedBody = null;
+            }
             if (response.status >= 500) {
                 had5xxResponse = true;
                 lastRetryableStatus = response.status;
@@ -86,8 +69,8 @@ export async function fetchWithRetry(url, options = {}, retryOptions = {}) {
             lastRetryableBody = null;
         }
         if (attempt < maxRetries) {
-            const delay = calculateBackoffDelay(attempt, initialDelayMs);
-            await sleep(delay);
+            const delay = Math.pow(2, attempt - 1) * initialDelayMs;
+            await new Promise((resolve) => setTimeout(resolve, delay));
         }
     }
     if (lastRetryableStatus !== undefined) {
@@ -99,51 +82,60 @@ export async function fetchWithRetry(url, options = {}, retryOptions = {}) {
     throw createError(`API call failed after ${maxRetries} attempts: unknown error`);
 }
 /**
- * Ensures all required configuration values are present, throwing a descriptive error if any are missing.
+ * Validates that every key in `keys` has a non-empty string value, returning the
+ * narrowed record or throwing a `PaymentGatewayError` listing all missing keys.
  */
-export function validateRequiredConfig(requiredVars, options = {}) {
+export function validateRequiredKeys(keys, prefix = "Missing required configuration keys") {
     const missingKeys = [];
-    for (const { key, value } of requiredVars) {
+    for (const [key, value] of Object.entries(keys)) {
         if (!value) {
             missingKeys.push(key);
         }
     }
     if (missingKeys.length > 0) {
-        const prefix = options.prefix ?? "Missing required configuration keys";
-        const message = `${prefix}: ${missingKeys.join(", ")}`;
-        const createError = options.createError ?? ((msg) => new PaymentGatewayError(msg));
-        throw createError(message);
+        throw new PaymentGatewayError(`${prefix}: ${missingKeys.join(", ")}`);
     }
-}
-async function computeHmacBytes(secret, payload) {
-    const encoder = new TextEncoder();
-    const keyBytes = encoder.encode(secret);
-    const messageBytes = encoder.encode(payload);
-    const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-    const signatureBuffer = await crypto.subtle.sign("HMAC", key, messageBytes);
-    return new Uint8Array(signatureBuffer);
+    return keys;
 }
 /**
- * Computes a Base64-encoded HMAC-SHA256 digest using Web Crypto.
+ * Normalizes Sierra Leone currency codes between outbound ISO format (`"SLE"`)
+ * and inbound display format (`"NLe"`).
  */
-export async function computeHmacBase64(secret, payload) {
-    const hashArray = await computeHmacBytes(secret, payload);
-    let binary = "";
-    for (let i = 0; i < hashArray.byteLength; i++) {
-        binary += String.fromCharCode(hashArray[i]);
+export function normalizeCurrency(currency, format = "display") {
+    if (format === "iso") {
+        if (!currency || currency === "NLe" || currency === "NLE") {
+            return "SLE";
+        }
+        return currency;
     }
-    return btoa(binary);
+    if (!currency || currency === "SLE") {
+        return "NLe";
+    }
+    return currency;
 }
 /**
- * Computes a lowercase hex-encoded HMAC-SHA256 digest using Web Crypto.
+ * Maps provider-specific transaction status strings into normalized `PaymentStatus` values.
  */
-export async function computeHmacHex(secret, payload) {
-    const hashArray = await computeHmacBytes(secret, payload);
-    let hex = "";
-    for (let i = 0; i < hashArray.byteLength; i++) {
-        hex += hashArray[i].toString(16).padStart(2, "0");
+export function normalizePaymentStatus(status) {
+    switch (status?.toLowerCase()) {
+        case "pending":
+        case "processing":
+            return "pending";
+        case "completed":
+        case "succeeded":
+            return "completed";
+        case "paid":
+            return "paid";
+        case "failed":
+            return "failed";
+        case "cancelled":
+        case "canceled":
+            return "cancelled";
+        case "expired":
+            return "expired";
+        default:
+            return "unknown";
     }
-    return hex;
 }
 /**
  * Timing-safe string comparison (normalizing optional trailing Base64 `=` padding).
@@ -160,34 +152,61 @@ export function safeCompare(a, b) {
     return result === 0;
 }
 /**
- * Verifies a Unix timestamp (seconds) falls within replay tolerance bounds.
+ * Verifies an incoming HMAC-SHA256 signed webhook request (optional shared header check,
+ * `t=<unix>,v1=<sig>` header parsing, replay window check, and constant-time HMAC comparison).
+ * Returns the raw request body and parsed timestamp/signature, or throws `WebhookVerificationError`.
  */
-export function verifyTimestamp(timestamp, maxAgeSeconds = 300, maxFutureSeconds = 60) {
-    const ts = typeof timestamp === "number" ? timestamp : parseInt(timestamp, 10);
-    if (isNaN(ts))
-        return false;
-    const now = Math.floor(Date.now() / 1000);
-    if (now - ts > maxAgeSeconds || ts - now > maxFutureSeconds) {
-        console.error(`❌ Timestamp out of tolerance: now=${now}, t=${ts}, diff=${ts - now}`);
-        return false;
+export async function verifyHmacWebhook(req, options) {
+    if (options.customHeaderName && options.customHeaderSecret) {
+        const headerSecret = req.headers.get(options.customHeaderName);
+        if (!headerSecret || !safeCompare(headerSecret, options.customHeaderSecret)) {
+            throw new WebhookVerificationError("Unauthorized header", 401);
+        }
     }
-    return true;
-}
-/**
- * Parses a `t=<timestamp>,v1=<signature>` webhook signature header.
- */
-export function parseSignatureHeader(header) {
-    const parts = Object.fromEntries(header.split(",").map((part) => {
+    const signatureHeader = req.headers.get(options.signatureHeaderName);
+    if (!signatureHeader) {
+        throw new WebhookVerificationError("Missing signature header", 401);
+    }
+    const parts = Object.fromEntries(signatureHeader.split(",").map((part) => {
         const [k, v] = part.split("=", 2);
         return [k?.trim() ?? "", v?.trim() ?? ""];
     }));
-    if (!parts.t || !parts.v1) {
-        throw new Error("Invalid signature format");
+    const timestamp = parts.t;
+    const signature = parts.v1;
+    if (!timestamp || !signature) {
+        throw new WebhookVerificationError("Invalid signature format", 401);
     }
-    return {
-        timestamp: parts.t,
-        signature: parts.v1,
-    };
+    const ts = parseInt(timestamp, 10);
+    const now = Math.floor(Date.now() / 1000);
+    const maxAge = options.maxAgeSeconds ?? 300;
+    const maxFuture = options.maxFutureSeconds ?? 60;
+    if (isNaN(ts) || now - ts > maxAge || ts - now > maxFuture) {
+        throw new WebhookVerificationError("Timestamp out of tolerance", 401);
+    }
+    const rawBody = await req.text();
+    const signedPayload = options.buildSignedPayload
+        ? options.buildSignedPayload(timestamp, rawBody)
+        : `${timestamp}_${rawBody}`;
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", encoder.encode(options.webhookSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const hashArray = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(signedPayload)));
+    let expectedSignature = "";
+    if (options.encoding === "hex") {
+        for (let i = 0; i < hashArray.byteLength; i++) {
+            expectedSignature += hashArray[i].toString(16).padStart(2, "0");
+        }
+    }
+    else {
+        let binary = "";
+        for (let i = 0; i < hashArray.byteLength; i++) {
+            binary += String.fromCharCode(hashArray[i]);
+        }
+        expectedSignature = btoa(binary);
+    }
+    if (!safeCompare(signature, expectedSignature)) {
+        throw new WebhookVerificationError("Invalid signature", 401);
+    }
+    return { rawBody, timestamp, signature };
 }
 export class MonetaryConverter {
     /**

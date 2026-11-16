@@ -72,9 +72,6 @@ export declare class MonimeAdapter implements PaymentGateway {
     private readonly baseUrl;
     private readonly customWebhookHeaderName;
     constructor(config: MonimeConfig);
-    private validateWalletSecrets;
-    private validateApiCredentials;
-    private validateWebhookSecrets;
     charge(request: ChargeRequest): Promise<TransactionResult<MonimeApiResponse<UssdPaymentCodeResponse>>>;
     payout(request: PayoutRequest): Promise<TransactionResult<MonimeApiResponse<MonimePayoutResult>>>;
     verify(transactionId: string, type?: "charge" | "payout"): Promise<TransactionResult>;

@@ -10,8 +10,6 @@ export type PaymentStatus =
 export type MobileMoneyProvider =
   | "orange_money"
   | "afrimoney"
-  | "m17"
-  | "m18"
   | (string & {});
 
 export type CurrencyCode = "SLE" | "NLE" | "NLe" | (string & {});

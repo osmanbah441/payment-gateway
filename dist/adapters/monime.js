@@ -1,5 +1,5 @@
-import { PaymentGatewayError, WebhookVerificationError, } from "../types.js";
-import { computeHmacBase64, DEFAULT_MAX_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS, fetchWithRetry, MonetaryConverter, parseSignatureHeader, safeCompare, validateRequiredConfig, verifyTimestamp, } from "../utils.js";
+import { PaymentGatewayError, } from "../types.js";
+import { DEFAULT_MAX_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS, fetchWithRetry, MonetaryConverter, normalizeCurrency, normalizePaymentStatus, validateRequiredKeys, verifyHmacWebhook, } from "../utils.js";
 const MONIME_API_BASE = "https://api.monime.io/v1";
 const DEFAULT_CUSTOM_WEBHOOK_HEADER = "salone-bazaar-monime-webhook";
 class MonimeApiError extends PaymentGatewayError {
@@ -29,12 +29,7 @@ async function monimeClient(config) {
     if (config.idempotencyKey) {
         headers["Idempotency-Key"] = config.idempotencyKey;
     }
-    const options = {
-        method,
-        headers,
-        body,
-    };
-    const response = await fetchWithRetry(url, options, {
+    const response = await fetchWithRetry(url, { method, headers, body }, {
         maxRetries: DEFAULT_MAX_RETRIES,
         timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
         idempotencyKey: config.idempotencyKey,
@@ -63,12 +58,6 @@ async function monimeClient(config) {
     }
     return parsedBody;
 }
-function validateRequired(requiredVars) {
-    validateRequiredConfig(requiredVars, {
-        prefix: "Missing required Monime personal access tokens",
-        createError: (message) => new MonimeApiError(message),
-    });
-}
 function normalizeProviderId(provider) {
     switch (provider) {
         case "orange_money":
@@ -77,33 +66,6 @@ function normalizeProviderId(provider) {
             return "m18";
         default:
             return provider;
-    }
-}
-function normalizeCurrency(currency) {
-    if (!currency || currency === "SLE") {
-        return "NLe";
-    }
-    return currency;
-}
-function normalizeStatus(status) {
-    switch (status?.toLowerCase()) {
-        case "pending":
-        case "processing":
-            return "pending";
-        case "completed":
-        case "succeeded":
-            return "completed";
-        case "paid":
-            return "paid";
-        case "failed":
-            return "failed";
-        case "cancelled":
-        case "canceled":
-            return "cancelled";
-        case "expired":
-            return "expired";
-        default:
-            return "unknown";
     }
 }
 function normalizeWebhookEventType(eventName) {
@@ -139,75 +101,37 @@ export class MonimeAdapter {
         this.customWebhookHeaderName =
             config.customWebhookHeaderName ?? DEFAULT_CUSTOM_WEBHOOK_HEADER;
     }
-    validateWalletSecrets() {
-        validateRequired([
-            { key: "PAYMENT_API_KEY", value: this.config.apiKey },
-            { key: "MONIME_SPACE_ID", value: this.config.spaceId },
-            { key: "ESCROW_ACCOUNT", value: this.config.escrowAccountId },
-            { key: "COMMISSION_ACCOUNT_ID", value: this.config.commissionAccountId },
-        ]);
-        return {
-            paymentApiKey: this.config.apiKey,
-            spaceId: this.config.spaceId,
-            escrowAccountId: this.config.escrowAccountId,
-            commissionAccountId: this.config.commissionAccountId,
-        };
-    }
-    validateApiCredentials() {
-        validateRequired([
-            { key: "PAYMENT_API_KEY", value: this.config.apiKey },
-            { key: "MONIME_SPACE_ID", value: this.config.spaceId },
-        ]);
-        return {
-            paymentApiKey: this.config.apiKey,
-            spaceId: this.config.spaceId,
-        };
-    }
-    validateWebhookSecrets() {
-        validateRequired([
-            {
-                key: "MONIME_PAYMENT_COMPLETED_WEBHOOK",
-                value: this.config.webhookSecret,
-            },
-            {
-                key: "SALONE_BAZAAR_PAYMENT_COMPLETED_WEBHOOK",
-                value: this.config.customWebhookHeaderSecret,
-            },
-        ]);
-        return {
-            monimeWebhookSecret: this.config.webhookSecret,
-            customWebhookHeaderSecret: this.config.customWebhookHeaderSecret,
-        };
-    }
     async charge(request) {
-        const tokens = this.validateWalletSecrets();
-        const requestCurrency = !request.currency || request.currency === "NLe" || request.currency === "NLE"
-            ? "SLE"
-            : request.currency;
+        const tokens = validateRequiredKeys({
+            PAYMENT_API_KEY: this.config.apiKey,
+            MONIME_SPACE_ID: this.config.spaceId,
+            ESCROW_ACCOUNT: this.config.escrowAccountId,
+            COMMISSION_ACCOUNT_ID: this.config.commissionAccountId,
+        }, "Missing required Monime personal access tokens");
         const payload = {
             name: request.description ?? "Checkout Payment",
             amount: {
-                currency: requestCurrency,
+                currency: normalizeCurrency(request.currency, "iso"),
                 value: MonetaryConverter.toMinor(request.amount),
             },
             duration: request.duration ?? "10m",
-            financialAccountId: request.destinationAccountId ?? tokens.escrowAccountId,
+            financialAccountId: request.destinationAccountId ?? tokens.ESCROW_ACCOUNT,
             reference: request.reference,
         };
         const res = await monimeClient({
             baseUrl: this.baseUrl,
             path: "/payment-codes",
-            personalAccessToken: tokens.paymentApiKey,
-            spaceId: tokens.spaceId,
+            personalAccessToken: tokens.PAYMENT_API_KEY,
+            spaceId: tokens.MONIME_SPACE_ID,
             idempotencyKey: request.idempotencyKey ?? request.reference,
             method: "POST",
             data: payload,
         });
         return {
             id: res.result.id,
-            status: normalizeStatus(res.result.status),
+            status: normalizePaymentStatus(res.result.status),
             amount: MonetaryConverter.toMajor(res.result.amount.value),
-            currency: normalizeCurrency(res.result.amount.currency),
+            currency: normalizeCurrency(res.result.amount.currency, "display"),
             reference: res.result.reference ?? request.reference,
             expireTime: res.result.expireTime,
             ussdCode: res.result.ussdCode,
@@ -215,24 +139,26 @@ export class MonimeAdapter {
         };
     }
     async payout(request) {
-        const tokens = this.validateWalletSecrets();
-        const requestCurrency = !request.currency || request.currency === "NLe" || request.currency === "NLE"
-            ? "SLE"
-            : request.currency;
+        const tokens = validateRequiredKeys({
+            PAYMENT_API_KEY: this.config.apiKey,
+            MONIME_SPACE_ID: this.config.spaceId,
+            ESCROW_ACCOUNT: this.config.escrowAccountId,
+            COMMISSION_ACCOUNT_ID: this.config.commissionAccountId,
+        }, "Missing required Monime personal access tokens");
         const res = await monimeClient({
             baseUrl: this.baseUrl,
             path: "/payouts",
-            personalAccessToken: tokens.paymentApiKey,
-            spaceId: tokens.spaceId,
+            personalAccessToken: tokens.PAYMENT_API_KEY,
+            spaceId: tokens.MONIME_SPACE_ID,
             method: "POST",
             idempotencyKey: request.idempotencyKey ?? request.reference,
             data: {
                 amount: {
-                    currency: requestCurrency,
+                    currency: normalizeCurrency(request.currency, "iso"),
                     value: MonetaryConverter.toMinor(request.amount),
                 },
                 source: {
-                    financialAccountId: request.sourceAccountId ?? tokens.escrowAccountId,
+                    financialAccountId: request.sourceAccountId ?? tokens.ESCROW_ACCOUNT,
                 },
                 destination: {
                     type: "momo",
@@ -243,28 +169,33 @@ export class MonimeAdapter {
         });
         return {
             id: res.result.id,
-            status: res.result.status ? normalizeStatus(res.result.status) : "completed",
+            status: res.result.status
+                ? normalizePaymentStatus(res.result.status)
+                : "completed",
             amount: MonetaryConverter.toMajor(res.result.amount.value),
-            currency: normalizeCurrency(res.result.amount.currency),
+            currency: normalizeCurrency(res.result.amount.currency, "display"),
             reference: res.result.reference ?? request.reference,
             raw: res,
         };
     }
     async verify(transactionId, type = "charge") {
-        const tokens = this.validateApiCredentials();
+        const tokens = validateRequiredKeys({
+            PAYMENT_API_KEY: this.config.apiKey,
+            MONIME_SPACE_ID: this.config.spaceId,
+        }, "Missing required Monime personal access tokens");
         if (type === "payout") {
             const res = await monimeClient({
                 baseUrl: this.baseUrl,
                 path: `/payouts/${transactionId}`,
-                personalAccessToken: tokens.paymentApiKey,
-                spaceId: tokens.spaceId,
+                personalAccessToken: tokens.PAYMENT_API_KEY,
+                spaceId: tokens.MONIME_SPACE_ID,
                 method: "GET",
             });
             return {
                 id: res.result.id,
-                status: normalizeStatus(res.result.status),
+                status: normalizePaymentStatus(res.result.status),
                 amount: MonetaryConverter.toMajor(res.result.amount.value),
-                currency: normalizeCurrency(res.result.amount.currency),
+                currency: normalizeCurrency(res.result.amount.currency, "display"),
                 reference: res.result.reference,
                 raw: res,
             };
@@ -272,15 +203,15 @@ export class MonimeAdapter {
         const res = await monimeClient({
             baseUrl: this.baseUrl,
             path: `/payment-codes/${transactionId}`,
-            personalAccessToken: tokens.paymentApiKey,
-            spaceId: tokens.spaceId,
+            personalAccessToken: tokens.PAYMENT_API_KEY,
+            spaceId: tokens.MONIME_SPACE_ID,
             method: "GET",
         });
         return {
             id: res.result.id,
-            status: normalizeStatus(res.result.status),
+            status: normalizePaymentStatus(res.result.status),
             amount: MonetaryConverter.toMajor(res.result.amount.value),
-            currency: normalizeCurrency(res.result.amount.currency),
+            currency: normalizeCurrency(res.result.amount.currency, "display"),
             reference: res.result.reference,
             expireTime: res.result.expireTime,
             ussdCode: res.result.ussdCode,
@@ -288,39 +219,17 @@ export class MonimeAdapter {
         };
     }
     async parseWebhook(req) {
-        const secrets = this.validateWebhookSecrets();
-        // 1. Initial Authorization Header Check
-        const headerSecret = req.headers.get(this.customWebhookHeaderName);
-        if (!headerSecret ||
-            !safeCompare(headerSecret, secrets.customWebhookHeaderSecret)) {
-            throw new WebhookVerificationError("Unauthorized header", 401);
-        }
-        // 2. Signature Presence Check
-        const signatureHeader = req.headers.get("monime-signature");
-        if (!signatureHeader) {
-            throw new WebhookVerificationError("Missing signature header", 401);
-        }
-        // 3. Signature Parsing
-        let parsedSignature;
-        try {
-            parsedSignature = parseSignatureHeader(signatureHeader);
-        }
-        catch {
-            throw new WebhookVerificationError("Invalid signature format", 401);
-        }
-        const { timestamp, signature } = parsedSignature;
-        // 4. Replay Protection (Timestamp Check)
-        if (!verifyTimestamp(timestamp)) {
-            throw new WebhookVerificationError("Timestamp out of tolerance", 401);
-        }
-        // 5. Signature Verification
-        const rawBody = await req.text();
-        const signedPayload = `${timestamp}_${rawBody}`;
-        const expectedSignature = await computeHmacBase64(secrets.monimeWebhookSecret, signedPayload);
-        if (!safeCompare(signature, expectedSignature)) {
-            throw new WebhookVerificationError("Invalid signature", 401);
-        }
-        // 6. JSON Parsing & Normalization
+        const secrets = validateRequiredKeys({
+            MONIME_PAYMENT_COMPLETED_WEBHOOK: this.config.webhookSecret,
+            SALONE_BAZAAR_PAYMENT_COMPLETED_WEBHOOK: this.config.customWebhookHeaderSecret,
+        }, "Missing required Monime personal access tokens");
+        const { rawBody } = await verifyHmacWebhook(req, {
+            signatureHeaderName: "monime-signature",
+            webhookSecret: secrets.MONIME_PAYMENT_COMPLETED_WEBHOOK,
+            customHeaderName: this.customWebhookHeaderName,
+            customHeaderSecret: secrets.SALONE_BAZAAR_PAYMENT_COMPLETED_WEBHOOK,
+            encoding: "base64",
+        });
         const payload = JSON.parse(rawBody);
         const rawEventName = payload?.event?.name ?? "";
         const type = normalizeWebhookEventType(rawEventName);
