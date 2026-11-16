@@ -3,9 +3,6 @@
   "version": "0.1.0",
   "description": "Provider-agnostic TypeScript payment gateway & webhook package",
   "type": "module",
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/osmanbah441/payment-gateway.git"
